@@ -13,6 +13,14 @@ from pdf2image import convert_from_bytes
 import pytesseract
 
 
+def rerun_app() -> None:
+    """Trigger a Streamlit rerun, compatible with new and old APIs."""
+    rerun = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+    if not rerun:
+        raise RuntimeError("Streamlit não expõe API para reiniciar a execução.")
+    rerun()
+
+
 def detect_default_tesseract_cmd() -> str:
     """Return a reasonable default path for the Tesseract executable."""
     env_paths = (
@@ -210,7 +218,7 @@ def main() -> None:
             st.session_state["pending_download_data"] = searchable_pdf.getvalue()
             st.session_state["pending_download_name"] = f"paginas_ocr_{uploaded_file.name}"
             st.session_state["pending_download_id"] = f"download-{uuid4().hex}"
-            st.experimental_rerun()
+            rerun_app()
 
         if run_ocr:
             try:
