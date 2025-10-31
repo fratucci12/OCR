@@ -1,6 +1,8 @@
+import base64
 import io
 import os
 import shutil
+from uuid import uuid4
 from pathlib import Path
 from typing import List
 
@@ -103,6 +105,26 @@ def build_searchable_pdf(images: List[Image.Image], lang: str) -> io.BytesIO:
     return buffer
 
 
+def trigger_auto_download(data: bytes, filename: str, element_id: str) -> None:
+    """Inject an auto-download link into the page."""
+    b64 = base64.b64encode(data).decode("ascii")
+    href = f"data:application/pdf;base64,{b64}"
+    st.markdown(
+        f"""
+        <a id="{element_id}" href="{href}" download="{filename}"></a>
+        <script>
+        (function() {{
+            const link = document.getElementById("{element_id}");
+            if (link) {{
+                link.click();
+            }}
+        }})();
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def display_ocr_output(texts: List[str]) -> None:
     for idx, text in enumerate(texts, start=1):
         st.subheader(f"Resultado - Página {idx}")
@@ -160,31 +182,35 @@ def main() -> None:
 
         cols = st.columns(2)
         with cols[0]:
-            run_ocr = st.button("Executar OCR nas páginas selecionadas", type="primary")
+            run_ocr = st.button("Executar OCR nas páginas selecionadas", type="primary", key="btn_visual_ocr")
         with cols[1]:
-            download_ocr_pdf = st.button("Baixar PDF com OCR das páginas selecionadas")
+            download_ocr_pdf = st.button(
+                "Baixar PDF com OCR das páginas selecionadas",
+                type="primary",
+                key="btn_download_ocr",
+            )
 
         if download_ocr_pdf:
             try:
-                images = convert_pdf_pages_to_images(file_bytes, selected_pages, dpi)
+                with st.spinner("Preparando páginas selecionadas..."):
+                    images = convert_pdf_pages_to_images(file_bytes, selected_pages, dpi)
             except Exception as exc:
                 st.error(f"Falha ao converter páginas em imagens. Verifique se o Poppler está instalado. Erro: {exc}")
                 return
 
             try:
                 searchable_pdf = build_searchable_pdf(images, lang=lang)
-                st.download_button(
-                    label="Baixar PDF com OCR",
-                    data=searchable_pdf.getvalue(),
-                    file_name=f"paginas_ocr_{uploaded_file.name}",
-                    mime="application/pdf",
-                )
             except pytesseract.TesseractNotFoundError:
                 st.error("Tesseract não encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
                 return
             except Exception as exc:
                 st.error(f"Erro ao gerar PDF com OCR: {exc}")
                 return
+
+            st.session_state["pending_download_data"] = searchable_pdf.getvalue()
+            st.session_state["pending_download_name"] = f"paginas_ocr_{uploaded_file.name}"
+            st.session_state["pending_download_id"] = f"download-{uuid4().hex}"
+            st.experimental_rerun()
 
         if run_ocr:
             try:
@@ -203,6 +229,13 @@ def main() -> None:
                 return
 
             display_ocr_output(texts)
+
+        pending_data = st.session_state.pop("pending_download_data", None)
+        pending_name = st.session_state.pop("pending_download_name", None)
+        pending_id = st.session_state.pop("pending_download_id", None)
+        if pending_data and pending_name and pending_id:
+            trigger_auto_download(pending_data, pending_name, pending_id)
+            st.success("PDF com OCR gerado. O download iniciará automaticamente.")
 
     else:
         try:
