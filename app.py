@@ -101,6 +101,19 @@ def convert_pdf_pages_to_images(file_bytes: bytes, pages: List[int], dpi: int) -
     return images
 
 
+def build_searchable_pdf(images: List[Image.Image], lang: str) -> io.BytesIO:
+    writer = PdfWriter()
+    for idx, image in enumerate(images, start=1):
+        with st.spinner(f"Gerando PDF OCR da página {idx}..."):
+            pdf_bytes = pytesseract.image_to_pdf_or_hocr(image, extension="pdf", lang=lang)
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        writer.add_page(reader.pages[0])
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    buffer.seek(0)
+    return buffer
+
+
 def display_ocr_output(texts: List[str]) -> None:
     for idx, text in enumerate(texts, start=1):
         st.subheader(f"Resultado - Página {idx}")
@@ -156,13 +169,15 @@ def main() -> None:
             st.warning("Selecione pelo menos uma página para processar.")
             return
 
-        cols = st.columns(2)
+        cols = st.columns(3)
         with cols[0]:
             run_ocr = st.button("Executar OCR nas páginas selecionadas", type="primary")
         with cols[1]:
-            generate_pdf = st.button("Gerar PDF apenas com páginas selecionadas")
+            download_ocr_pdf = st.button("Baixar PDF com OCR das páginas selecionadas")
+        with cols[2]:
+            download_raw_pdf = st.button("Baixar PDF original das páginas selecionadas")
 
-        if generate_pdf:
+        if download_raw_pdf:
             try:
                 extracted_pdf = extract_pdf_pages(file_bytes, selected_pages)
                 st.download_button(
@@ -173,6 +188,28 @@ def main() -> None:
                 )
             except Exception as exc:
                 st.error(f"Não foi possível gerar o PDF: {exc}")
+
+        if download_ocr_pdf:
+            try:
+                images = convert_pdf_pages_to_images(file_bytes, selected_pages, dpi)
+            except Exception as exc:
+                st.error(f"Falha ao converter páginas em imagens. Verifique se o Poppler está instalado. Erro: {exc}")
+                return
+
+            try:
+                searchable_pdf = build_searchable_pdf(images, lang=lang)
+                st.download_button(
+                    label="Baixar PDF com OCR",
+                    data=searchable_pdf.getvalue(),
+                    file_name=f"paginas_ocr_{uploaded_file.name}",
+                    mime="application/pdf",
+                )
+            except pytesseract.TesseractNotFoundError:
+                st.error("Tesseract não encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
+                return
+            except Exception as exc:
+                st.error(f"Erro ao gerar PDF com OCR: {exc}")
+                return
 
         if run_ocr:
             try:
