@@ -68,17 +68,6 @@ def build_page_selection(page_count: int) -> List[int]:
     return selected or []
 
 
-def extract_pdf_pages(file_bytes: bytes, pages: List[int]) -> io.BytesIO:
-    reader = PdfReader(io.BytesIO(file_bytes))
-    writer = PdfWriter()
-    for page_number in pages:
-        writer.add_page(reader.pages[page_number - 1])
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    buffer.seek(0)
-    return buffer
-
-
 def ocr_images(images: List[Image.Image], lang: str) -> List[str]:
     texts = []
     for idx, image in enumerate(images, start=1):
@@ -169,25 +158,11 @@ def main() -> None:
             st.warning("Selecione pelo menos uma página para processar.")
             return
 
-        cols = st.columns(3)
+        cols = st.columns(2)
         with cols[0]:
             run_ocr = st.button("Executar OCR nas páginas selecionadas", type="primary")
         with cols[1]:
             download_ocr_pdf = st.button("Baixar PDF com OCR das páginas selecionadas")
-        with cols[2]:
-            download_raw_pdf = st.button("Baixar PDF original das páginas selecionadas")
-
-        if download_raw_pdf:
-            try:
-                extracted_pdf = extract_pdf_pages(file_bytes, selected_pages)
-                st.download_button(
-                    label="Baixar PDF extraído",
-                    data=extracted_pdf.getvalue(),
-                    file_name=f"paginas_selecionadas_{uploaded_file.name}",
-                    mime="application/pdf",
-                )
-            except Exception as exc:
-                st.error(f"Não foi possível gerar o PDF: {exc}")
 
         if download_ocr_pdf:
             try:
