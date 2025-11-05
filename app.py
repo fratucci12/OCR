@@ -13,6 +13,10 @@ import pytesseract
 from streamlit.components.v1 import html
 
 MAX_PAGES_PER_CHUNK = 8
+PDF2IMAGE_THREAD_LIMIT = max(1, min(4, os.cpu_count() or 1))
+FAST_MODE_MAX_DPI = 220
+FAST_TESSERACT_CONFIG = "--oem 3 --psm 6"
+DEFAULT_TESSERACT_CONFIG = ""
 
 
 def detect_default_tesseract_cmd() -> str:
@@ -48,6 +52,10 @@ def configure_tesseract(cmd_path: str) -> None:
             pytesseract.pytesseract.tesseract_cmd = str(tesseract_executable)
         else:
             st.warning(f"Executavel nao encontrado em: {tesseract_executable}")
+
+
+def get_tesseract_config(fast_mode: bool) -> str:
+    return FAST_TESSERACT_CONFIG if fast_mode else DEFAULT_TESSERACT_CONFIG
 
 
 @st.cache_data(show_spinner=False)
@@ -96,26 +104,31 @@ def iter_pdf_images(file_bytes: bytes, pages: List[int], dpi: int) -> Iterator[T
                 chunk = [number]
         yield chunk
 
-    for chunk in contiguous_chunks(unique_pages):
+    ordered = sorted(unique_pages)
+
+    for chunk in contiguous_chunks(ordered):
         first = chunk[0]
         last = chunk[-1]
+        thread_count = min(len(chunk), PDF2IMAGE_THREAD_LIMIT)
         chunk_images = convert_from_bytes(
             file_bytes,
             dpi=dpi,
             first_page=first,
             last_page=last,
+            grayscale=True,
+            thread_count=thread_count,
         )
         for offset, page_number in enumerate(chunk):
             yield page_number, chunk_images[offset]
         chunk_images.clear()
 
 
-def ocr_pdf_pages(file_bytes: bytes, pages: List[int], dpi: int, lang: str) -> List[Tuple[int, str]]:
+def ocr_pdf_pages(file_bytes: bytes, pages: List[int], dpi: int, lang: str, config: str) -> List[Tuple[int, str]]:
     results: List[Tuple[int, str]] = []
     for page_number, image in iter_pdf_images(file_bytes, pages, dpi):
         try:
             with st.spinner(f"Executando OCR na pagina {page_number}..."):
-                text = pytesseract.image_to_string(image, lang=lang)
+                text = pytesseract.image_to_string(image, lang=lang, config=config)
         finally:
             try:
                 image.close()
@@ -125,11 +138,11 @@ def ocr_pdf_pages(file_bytes: bytes, pages: List[int], dpi: int, lang: str) -> L
     return results
 
 
-def build_searchable_pdf(file_bytes: bytes, pages: List[int], dpi: int, lang: str) -> io.BytesIO:
+def build_searchable_pdf(file_bytes: bytes, pages: List[int], dpi: int, lang: str, config: str) -> io.BytesIO:
     writer = PdfWriter()
     for page_number, image in iter_pdf_images(file_bytes, pages, dpi):
         try:
-            pdf_bytes = pytesseract.image_to_pdf_or_hocr(image, extension="pdf", lang=lang)
+            pdf_bytes = pytesseract.image_to_pdf_or_hocr(image, extension="pdf", lang=lang, config=config)
         finally:
             try:
                 image.close()
@@ -192,6 +205,15 @@ def main() -> None:
         help="Use os codigos Tesseract separados por '+', ex.: 'por+eng'. Certifique-se de que os pacotes estejam instalados.",
     )
     dpi = st.sidebar.slider("Resolucao (DPI) para conversao de paginas", 150, 400, 250, step=50)
+    fast_mode = st.sidebar.checkbox(
+        "Modo rapido (menor precisao)",
+        value=False,
+        help="Reduz o DPI e usa configuracoes mais rapidas do Tesseract. Ideal para rascunhos.",
+    )
+    effective_dpi = min(dpi, FAST_MODE_MAX_DPI) if fast_mode else dpi
+    tess_config = get_tesseract_config(fast_mode)
+    if fast_mode and effective_dpi != dpi:
+        st.sidebar.caption(f"DPI limitado a {effective_dpi} no modo rapido.")
 
     try:
         uploaded_file = st.file_uploader(
@@ -219,6 +241,10 @@ def main() -> None:
                 st.warning("Selecione pelo menos uma pagina para processar.")
                 return
 
+            selected_pages_sorted = sorted(set(selected_pages))
+            if selected_pages_sorted != selected_pages:
+                st.info("Paginas reordenadas para seguir a sequencia original do PDF.")
+
             cols = st.columns(2)
             with cols[0]:
                 run_ocr = st.button("Executar OCR nas paginas selecionadas", type="primary", key="btn_visual_ocr")
@@ -232,7 +258,13 @@ def main() -> None:
             if download_ocr_pdf:
                 try:
                     with st.spinner("Gerando PDF com OCR..."):
-                        searchable_pdf = build_searchable_pdf(file_bytes, selected_pages, dpi, lang)
+                        searchable_pdf = build_searchable_pdf(
+                            file_bytes,
+                            selected_pages_sorted,
+                            effective_dpi,
+                            lang,
+                            tess_config,
+                        )
                 except pytesseract.TesseractNotFoundError:
                     st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
                     return
@@ -250,7 +282,13 @@ def main() -> None:
 
             if run_ocr:
                 try:
-                    results = ocr_pdf_pages(file_bytes, selected_pages, dpi, lang)
+                    results = ocr_pdf_pages(
+                        file_bytes,
+                        selected_pages_sorted,
+                        effective_dpi,
+                        lang,
+                        tess_config,
+                    )
                 except pytesseract.TesseractNotFoundError:
                     st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
                     return
@@ -258,7 +296,7 @@ def main() -> None:
                     st.error(f"Erro do Tesseract ao executar OCR: {exc}")
                     return
                 except Exception as exc:
-                    st.error(f"Falha ao converter paginas em imagens. Verifique se o Poppler esta instalado. Erro: {exc}")
+                    st.error(f"Falha ao executar o OCR. Verifique se o Poppler esta instalado. Erro: {exc}")
                     return
 
                 if results:
@@ -283,19 +321,30 @@ def main() -> None:
 
         else:
             try:
-                image = Image.open(uploaded_file).convert("RGB")
+                image = Image.open(uploaded_file)
+                image = image.convert("L" if fast_mode else "RGB")
             except Exception as exc:
                 st.error(f"Nao foi possivel abrir a imagem: {exc}")
                 return
 
             if st.button("Executar OCR na imagem", type="primary"):
                 try:
-                    text = pytesseract.image_to_string(image, lang=lang)
+                    text = pytesseract.image_to_string(image, lang=lang, config=tess_config)
                     display_ocr_output([(1, text)])
                 except pytesseract.TesseractNotFoundError:
                     st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
                 except Exception as exc:
                     st.error(f"Erro ao executar o Tesseract: {exc}")
+                finally:
+                    try:
+                        image.close()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    image.close()
+                except Exception:
+                    pass
 
     except Exception as unexpected:
         st.error("Erro inesperado ao processar o arquivo.")
