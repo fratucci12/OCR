@@ -89,16 +89,39 @@ def ocr_images(images: List[Image.Image], lang: str) -> List[str]:
 
 
 def convert_pdf_pages_to_images(file_bytes: bytes, pages: List[int], dpi: int) -> List[Image.Image]:
-    images: List[Image.Image] = []
-    for page_number in pages:
-        page_images = convert_from_bytes(
+    if not pages:
+        return []
+
+    def contiguous_chunks(numbers: List[int]) -> List[List[int]]:
+        if not numbers:
+            return []
+        ordered = sorted(set(numbers))
+        chunks: List[List[int]] = []
+        current_chunk = [ordered[0]]
+        for number in ordered[1:]:
+            if number == current_chunk[-1] + 1:
+                current_chunk.append(number)
+            else:
+                chunks.append(current_chunk)
+                current_chunk = [number]
+        chunks.append(current_chunk)
+        return chunks
+
+    image_map: dict[int, Image.Image] = {}
+    for chunk in contiguous_chunks(pages):
+        first = chunk[0]
+        last = chunk[-1]
+        chunk_images = convert_from_bytes(
             file_bytes,
             dpi=dpi,
-            first_page=page_number,
-            last_page=page_number,
+            first_page=first,
+            last_page=last,
         )
-        images.extend(page_images)
-    return images
+        for offset, page_number in enumerate(range(first, last + 1)):
+            if page_number in chunk:
+                image_map[page_number] = chunk_images[offset]
+
+    return [image_map[page] for page in pages if page in image_map]
 
 
 def build_searchable_pdf(images: List[Image.Image], lang: str) -> io.BytesIO:
