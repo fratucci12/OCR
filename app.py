@@ -1,4 +1,3 @@
-import base64
 import io
 import json
 import os
@@ -12,14 +11,6 @@ from PyPDF2 import PdfReader, PdfWriter
 from pdf2image import convert_from_bytes
 import pytesseract
 from streamlit.components.v1 import html
-
-
-def rerun_app() -> None:
-    """Trigger a Streamlit rerun, compatible with new and old APIs."""
-    rerun = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
-    if not rerun:
-        raise RuntimeError("Streamlit nao expoe API para reiniciar a execucao.")
-    rerun()
 
 
 def detect_default_tesseract_cmd() -> str:
@@ -137,27 +128,20 @@ def build_searchable_pdf(images: List[Image.Image], lang: str) -> io.BytesIO:
     return buffer
 
 
-def trigger_auto_download(data: bytes, filename: str) -> None:
-    """Render HTML component that builds a Blob and forces the download."""
-    encoded = base64.b64encode(data).decode("ascii")
+def auto_click_button(label: str) -> None:
+    """Trigger a click on the first Streamlit button matching the provided label."""
     html(
         f"""
         <script>
-        const base64Data = {json.dumps(encoded)};
-        const byteCharacters = atob(base64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i += 1) {{
-            byteNumbers[i] = byteCharacters.charCodeAt(i);
+        const targetLabel = {json.dumps(label.strip())};
+        const streamlitDoc = window.parent.document;
+        const buttons = streamlitDoc.querySelectorAll("button");
+        for (const button of buttons) {{
+            if (button.innerText && button.innerText.trim() === targetLabel) {{
+                button.click();
+                break;
+            }}
         }}
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], {{ type: "application/pdf" }});
-        const link = document.createElement("a");
-        link.href = URL.createObjectURL(blob);
-        link.download = {json.dumps(filename)};
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         </script>
         """,
         height=0,
@@ -242,13 +226,17 @@ def main() -> None:
             except pytesseract.TesseractNotFoundError:
                 st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
                 return
+            except pytesseract.TesseractError as exc:
+                st.error(f"Erro do Tesseract ao gerar PDF: {exc}")
+                return
             except Exception as exc:
                 st.error(f"Erro ao gerar PDF com OCR: {exc}")
                 return
 
-            st.session_state["pending_download_data"] = searchable_pdf.getvalue()
-            st.session_state["pending_download_name"] = f"paginas_ocr_{uploaded_file.name}"
-            rerun_app()
+            st.session_state["pending_download"] = {
+                "data": searchable_pdf.getvalue(),
+                "name": f"paginas_ocr_{uploaded_file.name}",
+            }
 
         if run_ocr:
             try:
@@ -262,24 +250,29 @@ def main() -> None:
             except pytesseract.TesseractNotFoundError:
                 st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
                 return
+            except pytesseract.TesseractError as exc:
+                st.error(f"Erro do Tesseract ao executar OCR: {exc}")
+                return
             except Exception as exc:
                 st.error(f"Erro ao executar o Tesseract: {exc}")
                 return
 
             display_ocr_output(texts)
 
-        pending_data = st.session_state.pop("pending_download_data", None)
-        pending_name = st.session_state.pop("pending_download_name", None)
-        if pending_data and pending_name:
-            trigger_auto_download(pending_data, pending_name)
+        pending_download = st.session_state.pop("pending_download", None)
+        if pending_download:
+            data = pending_download["data"]
+            name = pending_download["name"]
             st.success("PDF com OCR gerado. O download iniciara automaticamente.")
+            fallback_label = "Se o download nao iniciar, clique aqui"
             st.download_button(
-                "Se o download nao iniciar, clique aqui",
-                data=pending_data,
-                file_name=pending_name,
+                fallback_label,
+                data=data,
+                file_name=name,
                 mime="application/pdf",
                 key="manual_download_fallback",
             )
+            auto_click_button(fallback_label)
 
     else:
         try:
