@@ -193,108 +193,113 @@ def main() -> None:
     )
     dpi = st.sidebar.slider("Resolucao (DPI) para conversao de paginas", 150, 400, 250, step=50)
 
-    uploaded_file = st.file_uploader(
-        "Envie um PDF ou imagem para extrair texto",
-        type=["pdf", "png", "jpg", "jpeg", "tiff", "bmp"],
-    )
+    try:
+        uploaded_file = st.file_uploader(
+            "Envie um PDF ou imagem para extrair texto",
+            type=["pdf", "png", "jpg", "jpeg", "tiff", "bmp"],
+        )
 
-    if not uploaded_file:
-        st.info("Envie um arquivo para comecar.")
-        return
-
-    file_suffix = uploaded_file.name.split(".")[-1].lower()
-
-    if file_suffix == "pdf":
-        file_bytes = load_pdf_bytes(uploaded_file)
-        try:
-            page_count = get_pdf_page_count(file_bytes)
-        except Exception as exc:
-            st.error(f"Falha ao ler PDF: {exc}")
+        if not uploaded_file:
+            st.info("Envie um arquivo para comecar.")
             return
 
-        st.write(f"PDF detectado com **{page_count}** paginas.")
-        selected_pages = build_page_selection(page_count)
-        if not selected_pages:
-            st.warning("Selecione pelo menos uma pagina para processar.")
-            return
+        file_suffix = uploaded_file.name.split(".")[-1].lower()
 
-        cols = st.columns(2)
-        with cols[0]:
-            run_ocr = st.button("Executar OCR nas paginas selecionadas", type="primary", key="btn_visual_ocr")
-        with cols[1]:
-            download_ocr_pdf = st.button(
-                "Baixar PDF com OCR das paginas selecionadas",
-                type="primary",
-                key="btn_download_ocr",
-            )
-
-        if download_ocr_pdf:
+        if file_suffix == "pdf":
+            file_bytes = load_pdf_bytes(uploaded_file)
             try:
-                with st.spinner("Gerando PDF com OCR..."):
-                    searchable_pdf = build_searchable_pdf(file_bytes, selected_pages, dpi, lang)
-            except pytesseract.TesseractNotFoundError:
-                st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
-                return
-            except pytesseract.TesseractError as exc:
-                st.error(f"Erro do Tesseract ao gerar PDF: {exc}")
-                return
+                page_count = get_pdf_page_count(file_bytes)
             except Exception as exc:
-                st.error(f"Falha ao gerar PDF com OCR. Verifique se o Poppler esta instalado. Erro: {exc}")
+                st.error(f"Falha ao ler PDF: {exc}")
                 return
 
-            st.session_state["pending_download"] = {
-                "data": searchable_pdf.getvalue(),
-                "name": f"paginas_ocr_{uploaded_file.name}",
-            }
+            st.write(f"PDF detectado com **{page_count}** paginas.")
+            selected_pages = build_page_selection(page_count)
+            if not selected_pages:
+                st.warning("Selecione pelo menos uma pagina para processar.")
+                return
 
-        if run_ocr:
+            cols = st.columns(2)
+            with cols[0]:
+                run_ocr = st.button("Executar OCR nas paginas selecionadas", type="primary", key="btn_visual_ocr")
+            with cols[1]:
+                download_ocr_pdf = st.button(
+                    "Baixar PDF com OCR das paginas selecionadas",
+                    type="primary",
+                    key="btn_download_ocr",
+                )
+
+            if download_ocr_pdf:
+                try:
+                    with st.spinner("Gerando PDF com OCR..."):
+                        searchable_pdf = build_searchable_pdf(file_bytes, selected_pages, dpi, lang)
+                except pytesseract.TesseractNotFoundError:
+                    st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
+                    return
+                except pytesseract.TesseractError as exc:
+                    st.error(f"Erro do Tesseract ao gerar PDF: {exc}")
+                    return
+                except Exception as exc:
+                    st.error(f"Falha ao gerar PDF com OCR. Verifique se o Poppler esta instalado. Erro: {exc}")
+                    return
+
+                st.session_state["pending_download"] = {
+                    "data": searchable_pdf.getvalue(),
+                    "name": f"paginas_ocr_{uploaded_file.name}",
+                }
+
+            if run_ocr:
+                try:
+                    results = ocr_pdf_pages(file_bytes, selected_pages, dpi, lang)
+                except pytesseract.TesseractNotFoundError:
+                    st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
+                    return
+                except pytesseract.TesseractError as exc:
+                    st.error(f"Erro do Tesseract ao executar OCR: {exc}")
+                    return
+                except Exception as exc:
+                    st.error(f"Falha ao converter paginas em imagens. Verifique se o Poppler esta instalado. Erro: {exc}")
+                    return
+
+                if results:
+                    display_ocr_output(results)
+                else:
+                    st.warning("Nenhuma pagina foi processada.")
+
+            pending_download = st.session_state.pop("pending_download", None)
+            if pending_download:
+                data = pending_download["data"]
+                name = pending_download["name"]
+                st.success("PDF com OCR gerado. O download iniciara automaticamente.")
+                fallback_label = "Se o download nao iniciar, clique aqui"
+                st.download_button(
+                    fallback_label,
+                    data=data,
+                    file_name=name,
+                    mime="application/pdf",
+                    key="manual_download_fallback",
+                )
+                auto_click_button(fallback_label)
+
+        else:
             try:
-                results = ocr_pdf_pages(file_bytes, selected_pages, dpi, lang)
-            except pytesseract.TesseractNotFoundError:
-                st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
-                return
-            except pytesseract.TesseractError as exc:
-                st.error(f"Erro do Tesseract ao executar OCR: {exc}")
-                return
+                image = Image.open(uploaded_file).convert("RGB")
             except Exception as exc:
-                st.error(f"Falha ao converter paginas em imagens. Verifique se o Poppler esta instalado. Erro: {exc}")
+                st.error(f"Nao foi possivel abrir a imagem: {exc}")
                 return
 
-            if results:
-                display_ocr_output(results)
-            else:
-                st.warning("Nenhuma pagina foi processada.")
+            if st.button("Executar OCR na imagem", type="primary"):
+                try:
+                    text = pytesseract.image_to_string(image, lang=lang)
+                    display_ocr_output([(1, text)])
+                except pytesseract.TesseractNotFoundError:
+                    st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
+                except Exception as exc:
+                    st.error(f"Erro ao executar o Tesseract: {exc}")
 
-        pending_download = st.session_state.pop("pending_download", None)
-        if pending_download:
-            data = pending_download["data"]
-            name = pending_download["name"]
-            st.success("PDF com OCR gerado. O download iniciara automaticamente.")
-            fallback_label = "Se o download nao iniciar, clique aqui"
-            st.download_button(
-                fallback_label,
-                data=data,
-                file_name=name,
-                mime="application/pdf",
-                key="manual_download_fallback",
-            )
-            auto_click_button(fallback_label)
-
-    else:
-        try:
-            image = Image.open(uploaded_file).convert("RGB")
-        except Exception as exc:
-            st.error(f"Nao foi possivel abrir a imagem: {exc}")
-            return
-
-        if st.button("Executar OCR na imagem", type="primary"):
-            try:
-                text = pytesseract.image_to_string(image, lang=lang)
-                display_ocr_output([(1, text)])
-            except pytesseract.TesseractNotFoundError:
-                st.error("Tesseract nao encontrado. Ajuste o caminho na barra lateral ou instale o Tesseract.")
-            except Exception as exc:
-                st.error(f"Erro ao executar o Tesseract: {exc}")
+    except Exception as unexpected:
+        st.error("Erro inesperado ao processar o arquivo.")
+        st.exception(unexpected)
 
 
 if __name__ == "__main__":
