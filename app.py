@@ -17,6 +17,7 @@ PDF2IMAGE_THREAD_LIMIT = max(1, min(4, os.cpu_count() or 1))
 FAST_MODE_MAX_DPI = 220
 FAST_TESSERACT_CONFIG = "--oem 3 --psm 6"
 DEFAULT_TESSERACT_CONFIG = ""
+USE_PDF_PAGE_EXTRACT = True
 
 
 def detect_default_tesseract_cmd() -> str:
@@ -106,21 +107,29 @@ def iter_pdf_images(file_bytes: bytes, pages: List[int], dpi: int) -> Iterator[T
 
     ordered = sorted(unique_pages)
 
+    reader = PdfReader(io.BytesIO(file_bytes))
+
     for chunk in contiguous_chunks(ordered):
         first = chunk[0]
         last = chunk[-1]
         thread_count = min(len(chunk), PDF2IMAGE_THREAD_LIMIT)
+        writer = PdfWriter()
+        for page_number in chunk:
+            writer.add_page(reader.pages[page_number - 1])
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        chunk_pdf_bytes = buffer.getvalue()
+        buffer.close()
         chunk_images = convert_from_bytes(
-            file_bytes,
+            chunk_pdf_bytes,
             dpi=dpi,
-            first_page=first,
-            last_page=last,
+            first_page=1,
+            last_page=len(chunk),
             grayscale=True,
             thread_count=thread_count,
         )
         for offset, page_number in enumerate(chunk):
             yield page_number, chunk_images[offset]
-        chunk_images.clear()
 
 
 def ocr_pdf_pages(file_bytes: bytes, pages: List[int], dpi: int, lang: str, config: str) -> List[Tuple[int, str]]:
